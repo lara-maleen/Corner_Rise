@@ -2,16 +2,18 @@
 title: "CornerRise_Script"
 author: "Lara Beckmann"
 date: "2025-06-18"
+always_allow_html: true
 output:
-  pdf_document: 
-   toc: true
-   toc_depth: 2
-   number_sections: true
-  word_document: default
   html_document: 
-   toc: true
-   number_sections: true
-   toc_float: true
+    toc: true
+    number_sections: true
+    toc_float: true
+  word_document: default
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    latex_engine: xelatex
 ---
 
 ## R Markdown
@@ -571,12 +573,31 @@ substrate_percent
 
 ```{r}
 
+# There were some sensor issues at Dive 5 - Rockaway Seamount. PSU and oxygen values do not correspond - and there is a jump in the data. I am keeping the values that do make sense (based on other studies etc)
+
+# Filter realistic salinity values (33–35.2 PSU) and oxygen (7–9 mg/L)
+data.clean <- data.a[data.a$psu >= 33 & data.a$psu <= 35.2, ]
+
+# filter oxygen to remove coinciding outliers
+data.clean <- data.clean[data.clean$oxygen >= 7 & data.clean$oxygen <= 8.6, ]
+
+min(data.clean$temp, na.rm = TRUE)
+max(data.clean$temp, na.rm = TRUE)
+data.clean[which.min(data.clean$temp), c("dive_name","depth","temp")]
+data.clean[which.max(data.clean$temp), c("dive_name","depth","temp")]
+
+min(data.clean$oxygen, na.rm = TRUE)
+max(data.clean$oxygen, na.rm = TRUE)
+data.clean[which.min(data.clean$oxygen), c("dive_name","depth","oxygen")]
+data.clean[which.max(data.clean$oxygen), c("dive_name","depth","oxygen")]
+
+
 # Compute Pearson correlation matrix
-env.pearson <- cor(data.a[,5:13], use = "pairwise.complete.obs") 
-round(env.pearson, 2) 
+env.pearson <- cor(data.clean[,5:14], use = "pairwise.complete.obs")
+round(env.pearson, 2)
 
 # Pairplot with correlation coefficients
-ggpairs(data.a[,5:13], 
+ggpairs(data.clean[,5:14], 
         lower = list(continuous = wrap("smooth", color = "blue")),  # Smoothed regression lines
         upper = list(continuous = wrap("cor", size = 5)),  # Pearson correlation values
         diag = list(continuous = wrap("barDiag", fill = "lightblue"))) +  # Histogram on diagonals
@@ -592,7 +613,7 @@ corrplot(env.pearson, method = "circle", type = "upper", tl.col = "black", tl.ce
 ```{r}
 
 # Create the plot 1) TEMP vs Oxgyen
-ggplot(data.a, aes(y = temp, x = oxygen, color = depth)) +
+ggplot(data.clean, aes(y = temp, x = oxygen, color = depth)) +
   geom_point(size = 1) +    # Scatter plot with color representing depth
   #scale_color_gradient(name = "depth (m)", low = "blue", high = "red") +  # Color gradient
   scale_color_viridis(option = "viridis", direction = -1) +  # Color scale with cividis for colorblind-friendly option
@@ -610,7 +631,7 @@ ggplot(data.a, aes(y = temp, x = oxygen, color = depth)) +
         legend.position = "right")
 
 # Create the plot 2) Salinity vs Temperature
-ggplot(data.a, aes(y = temp, x = psu, color = depth)) +
+ggplot(data.clean, aes(y = temp, x = psu, color = depth)) +
   geom_point(size = 1) +    # Scatter plot with color representing depth
   #scale_color_gradient(name = "depth (m)", low = "blue", high = "red") +  # Color gradient
   scale_color_viridis(option = "viridis", direction = -1) +  # Color scale with cividis for colorblind-friendly option
@@ -840,7 +861,7 @@ ggplot(species_long, aes(x = reorder(Species, depth), y = depth, color = Categor
   coord_flip() +
   scale_color_manual(values = c("Generalist" = "red", "Specialist" = "black")) + 
   labs(y = "depth (m)", x = "Species",
-       title = "Species depth Ranges",
+       title = "Families depth Ranges",
        color = "Category") +
   theme_minimal()
 
@@ -1105,6 +1126,7 @@ beta_results <- beta.multi(beta_core, index.family = "jaccard")
 print(beta_results)
 
 beta_pair <- beta.pair(beta_core, index.family = "jaccard")
+beta_pair
 # For example, visualize turnover:
 heatmap(as.matrix(beta_pair$beta.jtu), main = "Turnover between dives")
 
@@ -1164,6 +1186,29 @@ ggplot(turnover_pairs, aes(x=pair_type, y=turnover, fill=pair_type)) +
   labs(title="Species Turnover Within and Between Groups", y="Turnover (β_SIM)", x="Pair Type") +
   scale_fill_manual(values = c("Within group"="lightgreen", "Between groups"="pink")) +
   theme_minimal()
+
+#To report:
+
+beta_results <- beta.multi(beta_core, index.family = "jaccard")
+print(beta_results)
+
+# Extract turnover values by pair type
+within_turnover <- turnover_pairs$turnover[turnover_pairs$pair_type == "Within group"]
+between_turnover <- turnover_pairs$turnover[turnover_pairs$pair_type == "Between groups"]
+
+# Calculate means
+mean_within <- mean(within_turnover)
+mean_between <- mean(between_turnover)
+
+# Calculate standard deviations
+sd_within <- sd(within_turnover)
+sd_between <- sd(between_turnover)
+
+# Print results
+mean_within; sd_within
+mean_between; sd_between
+
+
 
 ## STATS
 
@@ -2354,6 +2399,75 @@ ggplot() +
 
 
 ```
+
+## Forest sizes
+
+``` {r}
+
+library(sf)
+
+# Using "expanded_garden_paths" from before
+df <- expanded_garden_paths
+
+# Function to compute seafloor area for one garden
+compute_surface_area <- function(garden_df) {
+  # --- Step 1: make polygon from lat/lon ---
+  coords <- garden_df %>%
+    select(lon, lat) %>%
+    distinct() %>%
+    as.matrix()
+  
+  # Close the polygon (last point = first point)
+  if (!all(coords[1,] == coords[nrow(coords),])) {
+    coords <- rbind(coords, coords[1,])
+  }
+  
+  poly <- st_polygon(list(coords)) |> st_sfc(crs = 4326)
+  
+  # --- Step 2: project to local UTM ---
+  lon_mean <- mean(garden_df$lon, na.rm = TRUE)
+  utm_zone <- floor((lon_mean + 180)/6) + 1
+  epsg <- 32600 + utm_zone  # WGS84 UTM Northern Hemisphere (fits to Corner Rise area)
+  poly_m <- st_transform(poly, epsg)
+  
+  # --- Step 3: flat area ---
+  area_flat <- as.numeric(st_area(poly_m))  # m^2
+  
+  # --- Step 4: fit plane to depth values ---
+  pts <- st_as_sf(garden_df, coords = c("lon","lat"), crs = 4326)
+  pts_m <- st_transform(pts, epsg)
+  XY <- st_coordinates(pts_m)
+  
+  fit <- lm(depth ~ X + Y, data = data.frame(depth = garden_df$depth,
+                                             X = XY[,1], Y = XY[,2]))
+  
+  bx <- coef(fit)["X"]
+  by <- coef(fit)["Y"]
+  
+  slope_rad <- atan(sqrt(bx^2 + by^2))
+  
+  # --- Step 5: correct area ---
+  area_surface <- area_flat / cos(slope_rad)
+  
+  tibble(
+    dive_id = unique(garden_df$dive_id),
+    flat_area_m2 = area_flat,
+    slope_deg = slope_rad * 180/pi,
+    surface_area_m2 = area_surface
+  )
+}
+
+# Apply per garden (grouped by garden)
+result <- df %>%
+  group_by(garden) %>%
+  group_modify(~ compute_surface_area(.x))
+
+print(result)
+#So most are above 25m2
+
+
+```
+
 
 ## Forest communtities
 
