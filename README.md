@@ -8,3 +8,5 @@ To re-create the water column CTD profile, please contact me. The .cnv CTD data 
 Contact:
 Lara Beckmann
 laramaleenbeck@gmail.com 
+
+You are free to use, adapt, and share the material for non-commercial purposes, as long as proper credit is given. Please cite the forthcoming paper when using this code or data in your own work. Citation details will be added here upon publication.
