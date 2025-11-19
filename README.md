@@ -3,3 +3,8 @@ Here you find the R script used for analysis of video data from OER NOAA Cruise 
 
 The directory /raw_data includes all files needed for the script and analysis. It also includes the density files, which were created separately for each forest patch. 
 
+To re-create the water column CTD profile, please contact me. The .cnv CTD data file that is required is too large to upload here. 
+
+Contact:
+Lara Beckmann
+laramaleenbeck@gmail.com 
