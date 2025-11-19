@@ -1,7 +1,7 @@
 ---
 title: "CornerRise_Script"
 author: "Lara Beckmann"
-date: "2025-06-18"
+date: "2025-11-19"
 always_allow_html: true
 output:
   html_document: 
@@ -76,8 +76,13 @@ library(betapart)
 library(plotly)
 library(htmltools)
 library(lubridate)
+library(iNEXT)
+library(oce)
+library(metR)
+library(patchwork)
 #remotes::install_github("MikkoVihtakari/ggOceanMaps")
 library(ggOceanMaps)
+
 
 ```
 
@@ -118,13 +123,13 @@ process_dive <- function(dive_df) {
   dive_df <- dive_df %>%
     filter(!is.na(time), !is.na(lat), !is.na(lon), !is.na(depth)) %>%
     arrange(time) %>%
-    mutate(
+    dplyr::mutate(
       time = as.POSIXct(time, format = "%Y-%m-%d %H:%M:%S", tz = "UTC"),
       time_sec = as.numeric(difftime(time, min(time), units = "secs")),
       lat_smooth = predict(smooth.spline(time_sec, lat, spar = smoothing_spar), time_sec)$y,
       lon_smooth = predict(smooth.spline(time_sec, lon, spar = smoothing_spar), time_sec)$y
     ) %>%
-    mutate(
+  dplyr::mutate(
       segment_distance_horizontal = c(0, distHaversine(
         cbind(lon_smooth[-n()], lat_smooth[-n()]),
         cbind(lon_smooth[-1], lat_smooth[-1])
@@ -134,7 +139,7 @@ process_dive <- function(dive_df) {
       track_segment = cumsum(c(FALSE, segment_distance_m[-1] > jump_threshold)) + 1 
     ) %>%
     group_by(track_segment) %>%
-    mutate(cum_distance_m = cumsum(segment_distance_m)) %>%
+   dplyr:: mutate(cum_distance_m = cumsum(segment_distance_m)) %>%
     ungroup()
 }
 
@@ -148,7 +153,7 @@ data.segmented <- data.a %>%
 
 summary_table <- data.segmented %>%
   group_by(dive_name) %>%
-  summarise(
+  dplyr::summarise(
     total_track_length_m = sum(segment_distance_m, na.rm = TRUE),  # this excludes jumps
     min_depth = min(depth, na.rm = TRUE),
     max_depth = max(depth, na.rm = TRUE),
@@ -160,7 +165,7 @@ summary_table <- data.segmented %>%
 jump_distances <- data.segmented %>%
   group_by(dive_name) %>%
   arrange(time) %>%
-  summarise(
+  dplyr::summarise(
     jump_dist_m = sum(
       distHaversine(
         cbind(lon_smooth[-n()], lat_smooth[-n()]),
@@ -277,7 +282,141 @@ print(num_single_dive_morphotypes)
 # Can print the morphotypes that occurred in a single dive only: 
 #knitr::kable(morphotypes_single_dive, caption = "Morphotypes that occures in a single dive location only")
 
+
+# Count total observations for single-dive morphotypes
+abundance_single_dive <- data.a %>%
+  filter(Morphotype %in% morphotypes_single_dive$Morphotype) %>%
+  dplyr::group_by(Morphotype) %>%
+  dplyr::summarise(TotalObservations = n())  # each row = 1 observation
+
+# Optional: identify true singletons
+singleton_morphotypes <- abundance_single_dive %>%
+  filter(TotalObservations == 1)
+
+# Print results
+knitr::kable(abundance_single_dive, caption = "Observations of morphotypes recorded at a single dive location")
+
+
+
 ``` 
+```{r}
+
+#Species Accumulation Curves SACs to check for sampling effort
+
+#For all dives:
+# Create site × morphotype matrix
+SPE2_matrix <- xtabs(~ dive_name + Morphotype, data = data.a)
+
+# Plot species accumulation curves for each dive
+specaccum_obj <- specaccum(SPE2_matrix)
+plot(specaccum_obj, xlab = "Number of samples (rows)", ylab = "Species richness",
+     main = "Species accumulation curves per dive")
+
+# Rarefied richness at smallest sample size
+min_samples <- min(rowSums(SPE2_matrix))
+rare_richness <- rarefy(SPE2_matrix, sample = min_samples)
+rare_richness
+
+# Rarefied richness 
+rare_richness_df <- data.frame(
+  Dive = names(rare_richness),
+  RarefiedRichness = rare_richness
+)
+
+ggplot(rare_richness_df, aes(x = Dive, y = RarefiedRichness)) +
+  geom_col(fill = "skyblue") +
+  theme_minimal() +
+  xlab("Dive site") +
+  ylab("Rarefied morphotype richness") +
+  coord_flip()  # if you want dives on the y-axis
+
+#For each dive separately (This is what we want)
+
+# Create site × morphotype matrix
+SPE2_matrix <- xtabs(~ dive_name + Morphotype, data = data.a)
+
+# Run species accumulation for each dive separately
+specaccum_list <- lapply(rownames(SPE2_matrix), function(dive) {
+  mat <- SPE2_matrix[dive, , drop = FALSE]  # subset one dive
+  # Create a fake 'sample' structure if needed (here each annotation = 1)
+  specaccum(t(mat))
+})
+
+# your data: dives × morphotypes (abundances)
+SPE2_matrix <- xtabs(~ dive_name + Morphotype, data = data.a)
+
+# Convert to list format (one vector per dive)
+abund_list <- apply(SPE2_matrix, 1, function(x) x[x > 0])
+
+# Run iNEXT for q = 0 (richness) for each dive
+iNext_out <- iNEXT(abund_list, q = 0, datatype = "abundance")
+
+# Plot (one curve per dive)
+ggiNEXT(iNext_out, type = 1, facet.var = "Assemblage") +
+  labs(x = "Number of samples (annotations)", y = "Estimated morphotype richness") +
+  theme_minimal()
+
+
+# Convert to list format (each element = abundances per dive)
+abund_list <- apply(SPE2_matrix, 1, function(x) x[x > 0])
+
+# Loop through dives
+for (d in names(abund_list)) {
+  cat("Processing", d, "...\n")
+  
+  # Run iNEXT for that dive
+  out_d <- iNEXT(abund_list[[d]], q = 0, datatype = "abundance")
+  
+  # Plot (note: remove color.var!)
+  p <- ggiNEXT(out_d, type = 1) +
+    ggtitle(paste("Species Accumulation Curve -", d)) +
+    theme_minimal()
+  
+  print(p)
+}
+
+for (d in names(abund_list)) {
+  cat("Processing", d, "...\n")
+  out_d <- iNEXT(abund_list[[d]], q = 0, datatype = "abundance")
+  
+  suppressWarnings({
+    p <- ggiNEXT(out_d, type = 1) +
+      ggtitle(paste("Species Accumulation Curve -", d)) +
+      theme_minimal()
+    print(p)
+  })
+}
+
+
+
+# Convert to list format (each element = abundances per dive)
+abund_list <- apply(SPE2_matrix, 1, function(x) x[x > 0])
+
+# Run iNEXT once for all dives together
+out_all <- iNEXT(abund_list, q = 0, datatype = "abundance")
+
+# Plot all dives in one combined plot
+p_all <- ggiNEXT(out_all, type = 1, color.var = "Assemblage") +
+  geom_line(size = 0.3) +                      
+  theme_minimal() +
+  labs(
+    title = "Species Accumulation Curves per Dive",
+    x = "Number of individuals",
+    y = "Species richness (q = 0)",
+    color = "Dive"
+  ) +
+  theme(
+    legend.position = "right",
+    panel.grid.minor = element_blank()
+  )
+
+print(p_all)
+
+
+
+```
+
+
 ## Effort correction 
 
 > Now I want to plot density (number of counts) by depth and divided for each phylum. Since some depths have been visited several times, I am scaling the counts by the length (in meters) of each dive (from transect duration/length above), which results in an effort-corrected count. This way there is no bias on the density, e.g. if more time spent in 1000 m because there were 2 dives. The plot also gives an overview of the highest abundances, and how the abundances change over depth. 
@@ -288,13 +427,13 @@ print(num_single_dive_morphotypes)
 
 # count occurrences per depth and Phylum
 df_summary <- data.a %>%
-  group_by(depth, Phylum, dive_name) %>%
-  summarise(count = n(), .groups = "drop")
+  dplyr::group_by(depth, Phylum, dive_name) %>%
+  dplyr::summarise(count = n(), .groups = "drop")
 
 # Merge dive track length with df_summary
 df_corrected <- df_summary %>%
-  left_join(corrected_summary, by = "dive_name") %>% 
-  mutate(transect_m = as.numeric(total_track_length_no_jumps), #thats in meters, accounts for the off=bottom time
+  dplyr::left_join(corrected_summary, by = "dive_name") %>% 
+  dplyr::mutate(transect_m = as.numeric(total_track_length_no_jumps), #thats in meters, accounts for the off=bottom time
          Effort_Corrected_count = count / transect_m) # Normalize counts by meter spend during time 
 
 # Plot density with effort correction
@@ -326,8 +465,8 @@ ggplot(data.a, aes(x = depth, fill = Phylum)) +
 # Bin the df into depth for a test on the abundances by depth - bins in 5 meter, but can be adapted. 
 
 df_corrected <- df_corrected %>%
-  mutate(depth_bin = cut(depth, breaks = seq(0, max(depth), by = 5), include.lowest = TRUE)) %>%
-  mutate(depth_bin = as.factor(depth_bin))  
+  dplyr::mutate(depth_bin = cut(depth, breaks = seq(0, max(depth), by = 5), include.lowest = TRUE)) %>%
+  dplyr::mutate(depth_bin = as.factor(depth_bin))  
 
 # Is there a linear effect? 
 glm_model <- glm(Effort_Corrected_count ~ depth, data = df_corrected, family = quasipoisson) # need to use quasipoisson because its non-integer counts with the correction 
@@ -360,31 +499,14 @@ The effort-corrected plot gives a better idea of relative abundance per unit eff
 
 ```{r}
 
+## Do not effort correct but I cant correct with linear method. Instead use uncorrected raw data / morphotype counts.
+
 # count unique morphotypes per depth for each phylum
 morpho_diversity <- data.a %>%
   group_by(depth, Phylum) %>% # by each depth now, but can also be done with depth bin, replacing than depth with depth_bin
   summarise(Unique_Morphotypes = n_distinct(Morphotype), .groups = "drop")
 
-df_corrected <- df_summary %>%
-  left_join(corrected_summary, by = "dive_name") %>% 
-  mutate(transect_m = as.numeric(total_track_length_no_jumps), #thats in meters, accounts for the off=bottom time
-         Effort_Corrected_count = count / transect_m) 
-
-# Step 2: Merge with df_corrected (Ensuring Consistency)
-df_corrected <- df_corrected %>%
-  left_join(morpho_diversity, by = c("depth", "Phylum"))  
- 
-df_corrected <- df_corrected %>% 
-   mutate(Effort_Corrected_Div = Unique_Morphotypes / transect_m) # Normalize counts by meters
-
-ggplot(df_corrected, aes(x = depth, fill = Phylum, weight = Effort_Corrected_count)) +
-  #geom_density(alpha = 0.7) +  # Density plot with transparency
-  geom_smooth(aes(y = Effort_Corrected_Div, color = Phylum), method = "loess", se = TRUE) +
-  scale_fill_manual(values = c("Cnidaria" = "#d8514e", "Porifera" = "#f2c714")) +  # Custom color
-  #coord_flip() +
-  labs(x = "depth (m)", y = "Effort-Corrected Diversity", fill = "Phylum") +
-  theme_minimal() 
-  #scale_x_reverse(breaks=seq(800, 5000, 200)) 
+# SEE THE SAC ANALYSIS - We cannot compare morphotype diversity or richness across dives because we dont have sufficient sampling... 
 
 ```
 
@@ -463,13 +585,6 @@ ggplot(plot_df, aes(x = depth, y = dive_name, fill = Phylum)) +
     axis.text.y = element_text(size = 10)
   )
 
-#add morphotype richness
-
-# Calculate morphotype richness per dive and phylum (total across all depths)
-richness_summary <- plot_df %>%
-  group_by(dive_name, Phylum) %>%
-  summarise(morphotype_richness = n_distinct(Morphotype), .groups = "drop")
-richness_summary$dive_name <- factor(richness_summary$dive_name, levels = location_order)
 
 # Ridgeline plot of abundance/density (your original plot style)
 p <- ggplot(plot_df, aes(x = depth, y = dive_name, fill = Phylum)) +
@@ -496,24 +611,29 @@ p <- ggplot(plot_df, aes(x = depth, y = dive_name, fill = Phylum)) +
     axis.text.y = element_text(size = 10)
   )
 
-# Add morphotype richness dots - position dots just right of the max depth (e.g., at x=10 m shallower than min depth)
-min_depth <- min(plot_df$depth)
-richness_summary <- richness_summary %>%
-  mutate(xpos = min_depth - 10)  # Place dots left of x-axis range (shallower)
+plot(p)
 
-p + 
-  geom_point(
-    data = richness_summary,
-    aes(x = xpos-250, y = dive_name, color = Phylum, size = morphotype_richness, alpha=0.7),
-    position = position_nudge(y = ifelse(richness_summary$Phylum == "Cnidaria", 0.20, -0.20)),
-    inherit.aes = FALSE
-  ) +
-  scale_color_manual(values = c("Cnidaria" = "#0072B2", "Porifera" = "#D55E00")) +
-  scale_size_continuous(range = c(0.5, 7)) +
-  guides(
-    size = guide_legend(title = "Morphotype Richness"),
-    color = "none"
-  )
+
+effort_summary <- df_corrected %>%
+  group_by(dive_name, Phylum) %>%
+  summarise(
+    mean_effort_corrected = mean(Effort_Corrected_count, na.rm = TRUE),
+    max_effort_corrected = max(Effort_Corrected_count, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(dive_name, Phylum)
+
+effort_summary
+
+
+peak_density <- df_corrected %>%
+  group_by(dive_name, Phylum) %>%
+  slice_max(Effort_Corrected_count, n = 1, with_ties = FALSE) %>%  # get depth with max density
+  ungroup() %>%
+  select(dive_name, Phylum, depth, Effort_Corrected_count)
+
+peak_density
+
 
 
 ```
@@ -579,7 +699,7 @@ substrate_percent
 data.clean <- data.a[data.a$psu >= 33 & data.a$psu <= 35.2, ]
 
 # filter oxygen to remove coinciding outliers
-data.clean <- data.clean[data.clean$oxygen >= 7 & data.clean$oxygen <= 8.6, ]
+#data.clean <- data.clean[data.clean$oxygen >= 7 & data.clean$oxygen <= 8.6, ]
 
 min(data.clean$temp, na.rm = TRUE)
 max(data.clean$temp, na.rm = TRUE)
@@ -647,6 +767,316 @@ ggplot(data.clean, aes(y = temp, x = psu, color = depth)) +
         legend.background = element_blank(),
         legend.box.background= element_rect(colour="black"),
         legend.position = "right")
+
+
+```
+
+
+### CTD column profile
+> Extract CTD data for the deepest dive (Dive 05) 
+
+```{r}
+
+#Load CTD data for complete surface to bottom track of ROV to plot the profile (down to 4000m in Dive 5). I had the raw files for this (.hex and .xmlcon) which needed to be converted to .cnv - I did not do this, as a specific software is needed for this. But once this is done, proceed with plotting. 
+
+ctd <- read.ctd('/Users/lara/Downloads/Corner Rise Video Analysis/raw_data/ex2104-DIVE05-ROV-CTD/EX2104_DIVE05_20210708_ROVCTD.cnv')
+
+summary(ctd)
+#plot(ctd) #takes a long time to run, so skip
+
+# Convert to a dataframe
+ctd.data <- as.data.frame(ctd@data)
+
+# Add depth (pressure in dbar ≈ depth in m, roughly valid for deep dives)
+ctd.data <- ctd.data %>%
+  mutate(depth = pressure)
+
+# Check which variable names exist
+names(ctd.data)
+
+#Need to convert Oxygen to mg/L as in my other plots (error <1%). Oxygen2 is ml/L 
+ctd.data$oxygen_mgL <- ctd.data$oxygen2 * 1.429
+
+#The sensor broke or measured wrong starting at the bottom - so I need to exclude salinity values starting from reaching to bottom
+
+max_depth <- max(ctd.data$depth, na.rm = TRUE)
+bottom_cutoff <- max_depth - 50   # I'm cutting the last 50m off, so I avoid the faulty sensor readings. 
+
+ctd.data <- ctd.data %>%
+  filter(depth < bottom_cutoff)
+
+ctd.data <- ctd.data %>%
+  filter(
+    salinity > 25 & salinity < 38
+  #  oxygen_mgL > 0 & oxygen_mgL < 8.4 #do not include, this will cut off the surface water measuremenets, just removing the faulty salinity rows is enough
+)
+
+ggplot(ctd.data, aes(x = oxygen_mgL, y = temperature, color = depth)) +
+  geom_point(size = 1) +
+  scale_color_viridis(option = "viridis", direction = -1) +
+  xlab("Oxygen (mg/L)") +
+  ylab("Temperature (°C)") +
+  theme_linedraw() +
+  theme(
+    panel.grid = element_blank(),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 10),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.background = element_blank(),
+    legend.box.background = element_rect(colour="black"),
+    legend.position = "right"
+  )
+
+#Can also plot the ml/L to compare to Henry et al 
+ggplot(ctd.data, aes(x = oxygen2, y = temperature, color = depth)) +
+  geom_point(size = 1) +
+  scale_color_viridis(option = "viridis", direction = -1) +
+  xlab("Oxygen (ml/L)") +
+  ylab("Temperature (°C)") +
+  theme_linedraw() +
+  theme(
+    panel.grid = element_blank(),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 10),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.background = element_blank(),
+    legend.box.background = element_rect(colour="black"),
+    legend.position = "right"
+  )
+
+ggplot(ctd.data, aes(x = salinity, y = temperature, color = depth)) +
+  geom_point(size = 1) +
+  scale_color_viridis(option = "viridis", direction = -1) +
+  xlab("Salinity (PSU)") +
+  ylab("Temperature (°C)") +
+  theme_linedraw() +
+  theme(
+    panel.grid = element_blank(),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 10),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.background = element_blank(),
+    legend.box.background = element_rect(colour="black"),
+    legend.position = "right"
+  )
+
+
+# Compute sigma-theta
+ctd.data$sigmaT <- swSigmaTheta(ctd.data$salinity,
+                                ctd.data$temperature,
+                                ctd.data$pressure)
+
+# Define LSW sigma-theta limits (Henry et al.)
+lsw_min <- 27.780
+lsw_max <- 27.834
+
+# Filter rows in that density range
+lsw_rows <- subset(ctd.data, sigmaT >= lsw_min & sigmaT <= lsw_max)
+lsw_depths <- lsw_rows$depth
+lsw_salinity<- lsw_rows$salinity
+max(lsw_salinity)
+min(lsw_salinity)
+
+lsw_oxy<- lsw_rows$oxygen_mgL
+max(lsw_oxy)
+min(lsw_oxy)
+
+lsw_temp<- lsw_rows$temperature
+max(lsw_temp)
+min(lsw_temp)
+
+# Create T–S grid for density contours
+sal_grid <- seq(min(ctd.data$salinity, na.rm=TRUE), max(ctd.data$salinity, na.rm=TRUE), length.out=100)
+temp_grid <- seq(min(ctd.data$temperature, na.rm=TRUE), max(ctd.data$temperature, na.rm=TRUE), length.out=100)
+grid <- expand.grid(salinity = sal_grid, temperature = temp_grid)
+grid$sigmaT <- swSigmaTheta(grid$salinity, grid$temperature, 0)  # reference 0 dbar
+
+# Optional: depth profile with LSW range
+ggplot(ctd.data, aes(x = temperature, y = depth)) +
+  geom_line() +
+  geom_hline(yintercept = range(lsw_depths), linetype="dashed", color="red") +
+  scale_y_reverse() +
+  ylab("Depth (m)") +
+  xlab("Temperature (°C)")
+
+# Create T–S plot with labeled sigma-theta contours
+ggplot(ctd.data, aes(x = salinity, y = temperature, color = depth)) +
+  geom_point(size = 1) +
+  # grey density lines + labels
+  geom_contour(data = grid, aes(z = sigmaT, x = salinity, y = temperature),
+               color = "grey60", bins = 20) +
+  # highlight LSW range in red
+  geom_contour(data = grid, aes(z = sigmaT, x = salinity, y = temperature),
+               color = "red", breaks = c(lsw_min, lsw_max), linetype = "dashed") +
+  geom_text_contour(data = grid, aes(z = sigmaT, x = salinity, y = temperature),
+                    breaks = lsw_min, color = "red", size = 3,
+                    label.placer = label_placer_flattest(), nudge_y = 0.13) +
+   geom_text_contour(data = grid, aes(z = sigmaT, x = salinity, y = temperature),
+                    breaks = lsw_max, color = "red", size = 3,
+                    label.placer = label_placer_flattest(), nudge_y = -0.13) +
+  scale_color_viridis(option = "viridis", direction = -1) +
+  xlab("Salinity (PSU)") +
+  ylab("Temperature (°C)") +
+  theme_linedraw() +
+  theme(panel.grid = element_blank(),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        axis.title = element_text(size = 14),
+        legend.background = element_blank(),
+        legend.box.background = element_rect(colour="black"),
+        legend.position = "right")
+
+
+# Convert to long format for faceted plotting
+plot_data <- ctd.data %>%
+  select(pressure, temperature, salinity, oxygen_mgL) %>%
+  pivot_longer(cols = c(temperature, salinity, oxygen_mgL),
+               names_to = "variable",
+               values_to = "value")
+
+# Plot raw points vs depth, faceted by variable
+ggplot(plot_data, aes(x = value, y = pressure)) +
+  geom_point(size = 0.5, alpha = 0.6) +  # raw measurements
+  scale_y_reverse() +  # shallow on top
+  facet_wrap(~variable, nrow = 1, scales = "free_x") +  # one row, separate x-axis for each
+  labs(y = "Pressure (db)", x = NULL) +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 12),
+        axis.title.y = element_text(size = 14),
+        axis.text = element_text(size = 10))
+
+# Pressure Binning 
+plot_data_binned <- plot_data %>%
+  # Create 10db pressure bins
+  mutate(pressure_bin = cut(pressure, breaks = seq(0, max(pressure), by = 10))) %>%
+  group_by(variable, pressure_bin) %>%
+  summarise(
+    pressure = mean(pressure),  # Use mean pressure in each bin
+    value = mean(value),        # Use mean value in each bin
+    .groups = 'drop'
+  ) %>%
+  arrange(pressure) %>%
+  select(-pressure_bin)
+
+# Check the reduction
+cat("Original data points:", nrow(plot_data), "\n")
+cat("Binned data points:", nrow(plot_data_binned), "\n")
+
+# Create the plots
+plot_temp <- ggplot(plot_data_binned %>% filter(variable == "temperature"), 
+                    aes(x = value, y = pressure)) +
+  geom_path(linewidth = 0.6, color = "#E41A1C") +
+  scale_y_reverse() +
+  labs(x = "Temperature (°C)", y = "Pressure (db)", title = "Temperature") +
+  theme_bw(base_size = 10) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+plot_sal <- ggplot(plot_data_binned %>% filter(variable == "salinity"), 
+                   aes(x = value, y = pressure)) +
+  geom_path(linewidth = 0.6, color = "#377EB8") +
+  scale_y_reverse() +
+  labs(x = "Salinity (PSU)", y = NULL, title = "Salinity") +
+  theme_bw(base_size = 10) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+plot_oxygen <- ggplot(plot_data_binned %>% filter(variable == "oxygen_mgL"), 
+                      aes(x = value, y = pressure)) +
+  geom_path(linewidth = 0.6, color = "#4DAF4A") +
+  scale_y_reverse() +
+  labs(x = expression("Oxygen (mg L"^{-1}*")"), y = NULL, title = "Oxygen") +
+  theme_bw(base_size = 10) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+# Combine plots side by side
+combined_plot <- plot_temp + plot_sal + plot_oxygen + 
+  plot_layout(nrow = 1)
+
+# Display the plot in R
+print(combined_plot)
+
+#Plots for MS:
+
+# Get shared depth range from the full dataset
+depth_limits <- range(ctd.data$depth, na.rm = TRUE)
+
+ggplot(ctd.data, aes(x = salinity, y = temperature, color = depth)) +
+  geom_point(size = 1) +
+  scale_color_viridis(option = "viridis", direction = -1, limits = depth_limits) +
+  xlab("Salinity (PSU)") +
+  ylab("Temperature (°C)") +
+  theme_linedraw() +
+  theme(
+    panel.grid = element_blank(),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 10),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.background = element_blank(),
+    legend.box.background = element_rect(colour = "black"),
+    legend.position = "right"
+  )
+
+
+ggplot(ctd.data, aes(x = oxygen_mgL, y = temperature, color = depth)) +
+  geom_point(size = 1) +
+  scale_color_viridis(option = "viridis", direction = -1, limits = depth_limits) +
+  xlab("Oxygen (mg/L)") +
+  ylab("Temperature (°C)") +
+  theme_linedraw() +
+  theme(
+    panel.grid = element_blank(),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 10),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.background = element_blank(),
+    legend.box.background = element_rect(colour="black"),
+    legend.position = "right"
+  )
+
+ggplot(data.clean %>% filter(depth > 900), aes(y = temp, x = oxygen, color = depth)) +
+  geom_point(size = 1) +
+  scale_color_viridis(option = "viridis", direction = -1, limits = depth_limits) +
+  xlab("Oxygen (mg/L)") +
+  ylab("Temperature (°C)") +
+  theme_linedraw() +
+  theme(
+    panel.grid = element_blank(),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 10),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.background = element_blank(),
+    legend.box.background = element_rect(colour = "black"),
+    legend.position = "right"
+  )
+
+ggplot(data.clean, aes(x = psu, y = temp, color = depth)) +
+  geom_point(size = 1) +
+  scale_color_viridis(
+    option = "viridis",
+    direction = -1,
+    limits = depth_limits,           # shared limits
+    name = "Depth (m)"               # cleaner legend title
+  ) +
+  xlab("Salinity (PSU)") +
+  ylab("Temperature (°C)") +
+  theme_linedraw() +
+  theme(
+    panel.grid = element_blank(),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 11),
+    legend.background = element_blank(),
+    legend.box.background = element_rect(colour = "black"),
+    legend.position = "right"
+  )
+
 
 ```
 
@@ -1188,7 +1618,6 @@ ggplot(turnover_pairs, aes(x=pair_type, y=turnover, fill=pair_type)) +
   theme_minimal()
 
 #To report:
-
 beta_results <- beta.multi(beta_core, index.family = "jaccard")
 print(beta_results)
 
@@ -1207,7 +1636,6 @@ sd_between <- sd(between_turnover)
 # Print results
 mean_within; sd_within
 mean_between; sd_between
-
 
 
 ## STATS
@@ -1346,6 +1774,18 @@ top_simper <- simper.results %>%
 
 # Check the filtered table
 print(top_simper)
+
+
+#CHeck how different the cluster 1 is to cluster 2 (basically calculating the bray curtis dissimilarity between clusters)
+
+bc <- vegdist(community_matrix, method = "bray")
+group1 <- which(group_df$group == "cluster1")
+group2 <- which(group_df$group == "cluster2")
+
+pairwise_bc <- as.matrix(bc)[group1, group2]
+overall_cluster1_cluster2 <- mean(pairwise_bc)
+overall_cluster1_cluster2 #cluster 1 is the deeper sites, cluster 2 the shallow sites
+
 
 ```
 
@@ -2056,6 +2496,57 @@ ggplot(garden_frame_density, aes(x = garden_id, y = density_per_m_squared)) +
   ylab("Density (ind/m²)")
 
 ```
+
+## Forest SACs 
+
+> SACs for the gardens
+
+```{r}
+
+
+# 1. Create garden × morphotype matrix
+garden_matrix <- xtabs(count ~ garden_id + morphotype, data = garden_long)
+
+# 2. Convert to list format (each element = abundances per garden)
+abund_list_garden <- apply(garden_matrix, 1, function(x) x[x > 0])
+
+# 3. Individual SAC plots per garden
+for (g in names(abund_list_garden)) {
+  cat("Processing", g, "...\n")
+  out_g <- iNEXT(abund_list_garden[[g]], q = 0, datatype = "abundance")
+  
+  suppressWarnings({
+    p <- ggiNEXT(out_g, type = 1) +
+      ggtitle(paste("Species Accumulation Curve -", g)) +
+      theme_minimal()
+    print(p)
+  })
+}
+
+
+# 4. Combined SAC plot for all gardens
+out_all_g <- iNEXT(abund_list_garden, q = 0, datatype = "abundance")
+
+p_all_g <- ggiNEXT(out_all_g, type = 1, color.var = "Assemblage") +
+  geom_line(size = 0.3) +
+  theme_minimal() +
+  labs(
+    title = "Species Accumulation Curves per Garden",
+    x = "Number of individuals",
+    y = "Species richness (q = 0)",
+    color = "Garden"
+  ) +
+  theme(
+    legend.position = "right",
+    panel.grid.minor = element_blank()
+  )
+
+print(p_all_g)
+
+
+```
+
+
 ## Forest vs non-forest
 
 ```{r}
@@ -2166,6 +2657,7 @@ ggplot(plot_data, aes(x = Source, y = Shannon_H, group = Dive, color = Dive)) +
   theme(legend.position = "none")
 
 ```
+
 > The next stats are not very relevant, because Permanova needs more than 2 sites to compare, but I only have 1 garden by dive site (or 2). So ignore.
 
 ```{r}
@@ -2385,7 +2877,6 @@ ggplot(garden_long, aes(x = lon, y = lat)) +
   labs(size = "Count", color = "Phylum", shape = "Phylum") +
   theme_minimal()
 
-
 ggplot() +
   geom_smooth(data = expanded_garden_paths, 
               aes(x = lon, y = lat, group = garden), 
@@ -2394,6 +2885,38 @@ ggplot() +
              aes(x = lon, y = lat, size = count, color = Phylum, shape = Phylum),
              alpha = 0.6) +
   scale_size_continuous(range = c(1, 10)) +
+  facet_wrap(~ garden, scales = "free") +
+  theme_minimal()
+
+
+garden_long <- garden_long %>%
+  mutate(count_bin = cut(
+    count,
+    breaks = c(0, 5, 20, 50, 1e6),  # last bin covers all larger counts
+    labels = c("0-5", "6-20", "21-50", "50+"),
+    right = TRUE,
+    include.lowest = TRUE
+  ))
+
+ggplot() +
+  # LOESS path
+  geom_smooth(
+    data = expanded_garden_paths, 
+    aes(x = lon, y = lat, group = garden), 
+    method = "loess", span = 0.5, se = FALSE, 
+    color = "grey91", linewidth = 3
+  ) +
+  # Points with binned sizes
+  geom_point(
+    data = garden_long, 
+    aes(x = lon, y = lat, size = count_bin, color = Phylum),
+    position = position_jitter(width = 0.0001, height = 0.0001),
+    alpha = 0.5
+  ) +
+  scale_size_manual(
+    values = c(2, 6, 10, 14), # visual sizes for each bin
+    name = "Count range"
+  ) +
   facet_wrap(~ garden, scales = "free") +
   theme_minimal()
 
