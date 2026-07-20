@@ -11,7 +11,8 @@ The full coral and sponge community dataset supporting these analyses is archive
 
 Usage: 
 You are free to use, adapt, and share this repository for non-commercial purposes, provided proper credit is given. Please cite the following manuscript when using these data or scripts in your work:
-Beckmann, L.M., Eveborn, L., Kenchington, E., & Waller, R.G. (2026). Hotspots Beyond Borders: Quantitative Assessment of Vulnerable Marine Ecosystems on the Corner Rise Seamounts with Implications for Conservation Planning. Frontiers in Marine Science (manuscript under review).
+
+Beckmann LM, Eveborn L, Kenchington E and Waller RG (2026) Hotspots beyond borders: quantitative assessment of Vulnerable Marine Ecosystems on the Corner Rise seamounts with implications for conservation planning. Front. Mar. Sci. 13:1752067. doi: 10.3389/fmars.2026.1752067
 
 Contact:
 Lara Maleen Beckmann - 
